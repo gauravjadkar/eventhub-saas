@@ -1,111 +1,151 @@
--- EventHub Database Schema
--- Run this SQL in your Supabase SQL Editor
+-- EventHub Database Schema (Updated to match existing database)
+-- This schema matches your current database structure
 
--- Create events table
-CREATE TABLE IF NOT EXISTS events (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    title VARCHAR(255) NOT NULL,
-    description TEXT,
-    date TIMESTAMP WITH TIME ZONE NOT NULL,
-    location VARCHAR(255) NOT NULL,
-    image_url VARCHAR(500),
-    category VARCHAR(100),
-    max_attendees INTEGER,
-    created_by UUID REFERENCES auth.users(id),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+-- Create profiles table (extends auth.users)
+CREATE TABLE IF NOT EXISTS profiles (
+    id UUID REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
+    full_name TEXT,
+    avatar_url TEXT,
+    role TEXT DEFAULT 'user',
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- Create registrations table
-CREATE TABLE IF NOT EXISTS registrations (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    event_id UUID REFERENCES events(id) ON DELETE CASCADE,
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
-    registered_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    UNIQUE(event_id, user_id)
 );
 
 -- Create categories table
 CREATE TABLE IF NOT EXISTS categories (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    name VARCHAR(100) NOT NULL UNIQUE,
+    name TEXT NOT NULL UNIQUE
+);
+
+-- Create events table
+CREATE TABLE IF NOT EXISTS events (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    organizer_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    category_id UUID REFERENCES categories(id),
+    title TEXT NOT NULL,
     description TEXT,
+    event_date TIMESTAMP WITH TIME ZONE NOT NULL,
+    location TEXT NOT NULL,
+    max_capacity INTEGER,
+    image_url TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Create bookings table
+CREATE TABLE IF NOT EXISTS bookings (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    event_id UUID REFERENCES events(id) ON DELETE CASCADE,
+    status TEXT DEFAULT 'confirmed',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(user_id, event_id)
+);
+
+-- Create notifications table
+CREATE TABLE IF NOT EXISTS notifications (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    message TEXT,
+    is_read BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- Insert default categories
-INSERT INTO categories (name, description) VALUES
-('Technology', 'Tech meetups, conferences, and workshops'),
-('Business', 'Networking events, seminars, and conferences'),
-('Arts & Culture', 'Art exhibitions, cultural events, and performances'),
-('Sports & Fitness', 'Sports events, fitness classes, and outdoor activities'),
-('Education', 'Workshops, courses, and educational seminars'),
-('Social', 'Social gatherings, parties, and community events')
+INSERT INTO categories (name) VALUES
+('Technology'),
+('Business'),
+('Arts & Culture'),
+('Sports & Fitness'),
+('Education'),
+('Social')
 ON CONFLICT (name) DO NOTHING;
 
 -- Enable Row Level Security (RLS)
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE registrations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bookings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
 
--- Create RLS policies for events
-CREATE POLICY "Events are viewable by everyone" ON events 
+-- RLS Policies for profiles
+CREATE POLICY "Public profiles are viewable by everyone" ON profiles
     FOR SELECT USING (true);
 
-CREATE POLICY "Users can create events" ON events 
-    FOR INSERT WITH CHECK (auth.uid() = created_by);
+CREATE POLICY "Users can insert their own profile" ON profiles
+    FOR INSERT WITH CHECK (auth.uid() = id);
 
-CREATE POLICY "Users can update their own events" ON events 
-    FOR UPDATE USING (auth.uid() = created_by);
+CREATE POLICY "Users can update their own profile" ON profiles
+    FOR UPDATE USING (auth.uid() = id);
 
-CREATE POLICY "Users can delete their own events" ON events 
-    FOR DELETE USING (auth.uid() = created_by);
+-- RLS Policies for events
+CREATE POLICY "Events are viewable by everyone" ON events
+    FOR SELECT USING (true);
 
--- Create RLS policies for registrations
-CREATE POLICY "Users can view their own registrations" ON registrations 
+CREATE POLICY "Users can create events" ON events
+    FOR INSERT WITH CHECK (auth.uid() = organizer_id);
+
+CREATE POLICY "Users can update their own events" ON events
+    FOR UPDATE USING (auth.uid() = organizer_id);
+
+CREATE POLICY "Users can delete their own events" ON events
+    FOR DELETE USING (auth.uid() = organizer_id);
+
+-- RLS Policies for bookings
+CREATE POLICY "Users can view their own bookings" ON bookings
     FOR SELECT USING (auth.uid() = user_id);
 
-CREATE POLICY "Users can create their own registrations" ON registrations 
+CREATE POLICY "Users can create their own bookings" ON bookings
     FOR INSERT WITH CHECK (auth.uid() = user_id);
 
-CREATE POLICY "Users can delete their own registrations" ON registrations 
+CREATE POLICY "Users can update their own bookings" ON bookings
+    FOR UPDATE USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their own bookings" ON bookings
     FOR DELETE USING (auth.uid() = user_id);
 
--- Create RLS policies for categories
-CREATE POLICY "Categories are viewable by everyone" ON categories 
+-- RLS Policies for categories
+CREATE POLICY "Categories are viewable by everyone" ON categories
     FOR SELECT USING (true);
 
--- Create some sample events (optional)
-INSERT INTO events (title, description, date, location, category, max_attendees) VALUES
-(
-    'JavaScript Workshop', 
+-- RLS Policies for notifications
+CREATE POLICY "Users can view their own notifications" ON notifications
+    FOR SELECT USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their own notifications" ON notifications
+    FOR UPDATE USING (auth.uid() = user_id);
+
+-- Create indexes for better performance
+CREATE INDEX IF NOT EXISTS idx_events_event_date ON events(event_date);
+CREATE INDEX IF NOT EXISTS idx_events_category_id ON events(category_id);
+CREATE INDEX IF NOT EXISTS idx_events_organizer_id ON events(organizer_id);
+CREATE INDEX IF NOT EXISTS idx_bookings_event_id ON bookings(event_id);
+CREATE INDEX IF NOT EXISTS idx_bookings_user_id ON bookings(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+
+-- Function to automatically create profile on user signup
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO public.profiles (id, full_name, avatar_url)
+    VALUES (NEW.id, NEW.raw_user_meta_data->>'full_name', NEW.raw_user_meta_data->>'avatar_url');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger to create profile on user signup
+CREATE OR REPLACE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users
+    FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- Sample events (optional)
+INSERT INTO events (organizer_id, category_id, title, description, event_date, location, max_capacity) 
+SELECT 
+    auth.uid(),
+    (SELECT id FROM categories WHERE name = 'Technology' LIMIT 1),
+    'JavaScript Workshop',
     'Learn modern JavaScript techniques and best practices in this hands-on workshop.',
     '2026-02-15 14:00:00+00',
     'Tech Hub, Downtown',
-    'Technology',
     30
-),
-(
-    'Business Networking Mixer', 
-    'Connect with local entrepreneurs and business professionals.',
-    '2026-02-20 18:30:00+00',
-    'Business Center, Main Street',
-    'Business',
-    50
-),
-(
-    'Art Gallery Opening', 
-    'Discover amazing local artists at our monthly gallery opening.',
-    '2026-02-25 19:00:00+00',
-    'City Art Gallery',
-    'Arts & Culture',
-    100
-)
+WHERE auth.uid() IS NOT NULL
 ON CONFLICT DO NOTHING;
-
--- Create indexes for better performance
-CREATE INDEX IF NOT EXISTS idx_events_date ON events(date);
-CREATE INDEX IF NOT EXISTS idx_events_category ON events(category);
-CREATE INDEX IF NOT EXISTS idx_events_created_by ON events(created_by);
-CREATE INDEX IF NOT EXISTS idx_registrations_event_id ON registrations(event_id);
-CREATE INDEX IF NOT EXISTS idx_registrations_user_id ON registrations(user_id);
